@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thread-Safe Message Queue — 10 Problems</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --accent: #b4531a;
+    --code-bg: #f0ede6;
+    --border: #d8d4c8;
+    --card: #fff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2.5rem 2rem 5rem;
+    font-size: 18px;
+  }
+  header { border-bottom: 2px solid var(--fg); padding-bottom: 1rem; margin-bottom: 2rem; }
+  h1 { font-size: 2.1rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); font-size: 1.05rem; }
+
+  .problem {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.75rem 2rem;
+    margin-bottom: 1.5rem;
+    scroll-margin-top: 1rem;
+  }
+  .problem h2 { font-size: 1.4rem; margin: 0 0 0.75rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .num { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--accent); font-weight: 700; font-size: 1.05rem; }
+  .problem p { margin: 0.5rem 0; }
+  .problem ul { margin: 0.5rem 0; padding-left: 1.5rem; }
+  .problem li { margin: 0.2rem 0; }
+
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: 1.1rem 1.25rem; border-radius: 4px; overflow-x: auto; font-size: 1rem; line-height: 1.6; margin: 0.9rem 0; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .diagram { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1.25rem; margin: 1.25rem 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+  .example { margin-top: 0.9rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); }
+  .example h4 { margin: 0 0 0.5rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; }
+  .check { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px dashed var(--border); font-size: 1.02rem; }
+  .check strong { color: var(--accent); }
+
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 2rem; }
+  .toc h3 { margin: 0 0 0.6rem; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .toc ol { margin: 0; padding-left: 1.5rem; columns: 2; column-gap: 2rem; font-size: 1.05rem; line-height: 1.9; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+
+  .svg-label { font: 12px ui-monospace, "SF Mono", Menlo, monospace; fill: #1a1a1a; }
+  .svg-title { font: bold 12px -apple-system, sans-serif; fill: #666; }
+  .svg-msg   { font: 11px ui-monospace, monospace; fill: #1a1a1a; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Thread-Safe In-Memory Message Queue</h1>
+  <p>10 progressive problems · Python 3.13 · targets Part A of the interview prep</p>
+</header>
+
+<nav class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#p1">Single-topic FIFO</a></li>
+    <li><a href="#p2">Multi-topic routing</a></li>
+    <li><a href="#p3">Global lock + stress harness</a></li>
+    <li><a href="#p4">Per-topic locks</a></li>
+    <li><a href="#p5">Message objects</a></li>
+    <li><a href="#p6">Lazy TTL</a></li>
+    <li><a href="#p7">Eager reaper</a></li>
+    <li><a href="#p8">Visibility timeout</a></li>
+    <li><a href="#p9">Ack and redelivery</a></li>
+    <li><a href="#p10">Assemble the full thing</a></li>
+  </ol>
+</nav>
+
+<!-- ============ 01 ============ -->
+<section class="problem" id="p1">
+  <h2><span class="num">01</span> Single-topic FIFO</h2>
+  <p>Write a class <code>Queue1</code> with:</p>
+  <ul>
+    <li><code>publish(msg: str) -&gt; None</code></li>
+    <li><code>consume() -&gt; str | None</code> — oldest unread message, or <code>None</code> if empty.</li>
+  </ul>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 130" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+        </marker>
+        <marker id="arflow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#666"/>
+        </marker>
+      </defs>
+      <text x="10" y="72" class="svg-label">publish</text>
+      <line x1="70" y1="67" x2="115" y2="67" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#ar)"/>
+      <rect x="125" y="47" width="60" height="40" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="155" y="72" text-anchor="middle" class="svg-msg">"c"</text>
+      <rect x="185" y="47" width="60" height="40" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="215" y="72" text-anchor="middle" class="svg-msg">"b"</text>
+      <rect x="245" y="47" width="60" height="40" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="275" y="72" text-anchor="middle" class="svg-msg">"a"</text>
+      <text x="215" y="20" text-anchor="middle" class="svg-title">FIFO order</text>
+      <text x="155" y="40" text-anchor="middle" class="svg-title">tail</text>
+      <line x1="178" y1="36" x2="248" y2="36" stroke="#666" stroke-width="1.2" marker-end="url(#arflow)"/>
+      <text x="275" y="40" text-anchor="middle" class="svg-title">head</text>
+      <line x1="315" y1="67" x2="360" y2="67" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="372" y="72" class="svg-label">consume() → "a"</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>q = Queue1()
+q.publish("a"); q.publish("b"); q.publish("c")
+q.consume()  # → "a"
+q.consume()  # → "b"
+q.consume()  # → "c"
+q.consume()  # → None</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> three consumes return "a", "b", "c", then <code>None</code>.</div>
+</section>
+
+<!-- ============ 02 ============ -->
+<section class="problem" id="p2">
+  <h2><span class="num">02</span> Multi-topic routing</h2>
+  <p>Write <code>Queue2</code> with <code>publish(topic, msg)</code> and <code>consume(topic)</code>. Topics are independent FIFOs. A topic never published to returns <code>None</code> — don't raise.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 195" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+        </marker>
+      </defs>
+      <text x="10" y="60" class="svg-label">"a"</text>
+      <text x="10" y="110" class="svg-label">"b"</text>
+      <text x="10" y="160" class="svg-label">"c"</text>
+
+      <rect x="55" y="42" width="50" height="30" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="80" y="62" text-anchor="middle" class="svg-msg">"3"</text>
+      <rect x="105" y="42" width="50" height="30" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="130" y="62" text-anchor="middle" class="svg-msg">"1"</text>
+
+      <rect x="105" y="92" width="50" height="30" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="130" y="112" text-anchor="middle" class="svg-msg">"2"</text>
+
+      <rect x="55" y="142" width="100" height="30" fill="none" stroke="#d8d4c8" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <text x="105" y="162" text-anchor="middle" class="svg-title">(empty)</text>
+
+      <line x1="165" y1="57" x2="205" y2="57" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#ar2)"/>
+      <text x="215" y="61" class="svg-label">consume("a") → "1"</text>
+      <line x1="165" y1="107" x2="205" y2="107" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#ar2)"/>
+      <text x="215" y="111" class="svg-label">consume("b") → "2"</text>
+      <line x1="165" y1="157" x2="205" y2="157" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#ar2)"/>
+      <text x="215" y="161" class="svg-label">consume("c") → None</text>
+      <text x="105" y="27" text-anchor="middle" class="svg-title">dict[str, deque]</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>q = Queue2()
+q.publish("a", "1"); q.publish("b", "2"); q.publish("a", "3")
+q.consume("a")  # → "1"
+q.consume("a")  # → "3"
+q.consume("b")  # → "2"
+q.consume("c")  # → None  (never published)</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> per-topic order is preserved and unknown topics are safe.</div>
+</section>
+
+<!-- ============ 03 ============ -->
+<section class="problem" id="p3">
+  <h2><span class="num">03</span> Global lock + stress harness</h2>
+  <p>Take <code>Queue2</code>, wrap every public method body in one <code>threading.Lock</code> → <code>Queue3</code>. Then write the stress harness you'll reuse for the rest of the ladder.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg">
+      <text x="12" y="42" class="svg-label">P1</text>
+      <text x="12" y="72" class="svg-label">P2</text>
+      <text x="12" y="102" class="svg-label">P3</text>
+      <text x="12" y="132" class="svg-label">P4</text>
+      <line x1="38" y1="38" x2="175" y2="88" stroke="#666" stroke-width="1"/>
+      <line x1="38" y1="68" x2="175" y2="95" stroke="#666" stroke-width="1"/>
+      <line x1="38" y1="98" x2="175" y2="100" stroke="#666" stroke-width="1"/>
+      <line x1="38" y1="128" x2="175" y2="107" stroke="#666" stroke-width="1"/>
+
+      <rect x="175" y="52" width="265" height="92" fill="#f0ede6" stroke="#b4531a" stroke-width="2" stroke-dasharray="6 4"/>
+      <text x="307" y="44" text-anchor="middle" class="svg-title">one global Lock</text>
+
+      <rect x="195" y="72" width="65" height="26" fill="#fff" stroke="#b4531a" stroke-width="1"/>
+      <text x="227" y="89" text-anchor="middle" class="svg-msg">topic a</text>
+      <rect x="270" y="72" width="65" height="26" fill="#fff" stroke="#b4531a" stroke-width="1"/>
+      <text x="302" y="89" text-anchor="middle" class="svg-msg">topic b</text>
+      <rect x="345" y="72" width="65" height="26" fill="#fff" stroke="#b4531a" stroke-width="1"/>
+      <text x="377" y="89" text-anchor="middle" class="svg-msg">topic c</text>
+      <text x="307" y="126" text-anchor="middle" class="svg-title">everyone serialises here</text>
+
+      <line x1="440" y1="88" x2="578" y2="38" stroke="#666" stroke-width="1"/>
+      <line x1="440" y1="95" x2="578" y2="68" stroke="#666" stroke-width="1"/>
+      <line x1="440" y1="100" x2="578" y2="98" stroke="#666" stroke-width="1"/>
+      <line x1="440" y1="107" x2="578" y2="128" stroke="#666" stroke-width="1"/>
+      <text x="586" y="42" class="svg-label">C1</text>
+      <text x="586" y="72" class="svg-label">C2</text>
+      <text x="586" y="102" class="svg-label">C3</text>
+      <text x="586" y="132" class="svg-label">C4</text>
+
+      <text x="307" y="172" text-anchor="middle" class="svg-title">assert: nothing lost, nothing duplicated</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>def stress(queue, n_producers=4, n_consumers=4, per_producer=1000, topics=("a","b","c")):
+    # each producer publishes `per_producer` messages, round-robin over topics,
+    # each tagged with a unique id like f"{pid}-{i}"
+    # consumers loop consuming random topics until total_consumed == total_published
+    # return (published_set, consumed_list)
+
+published, consumed = stress(Queue3())
+assert set(consumed) == published
+assert len(consumed) == len(published)   # no duplication</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> passes with the lock. Comment the lock out and re-run — expect loss, duplication, or a hang.</div>
+</section>
+
+<!-- ============ 04 ============ -->
+<section class="problem" id="p4">
+  <h2><span class="num">04</span> Per-topic locks</h2>
+  <p>Refactor into <code>Queue4</code>. One <code>_topics_lock</code> guards <em>only</em> the <code>dict[str, TopicState]</code>. Each <code>TopicState</code> owns a <code>Lock</code> around its own deque.</p>
+  <p><strong>Rule:</strong> never hold both at once. Get in, look up or create, get out, then lock the topic.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 195" xmlns="http://www.w3.org/2000/svg">
+      <text x="310" y="22" text-anchor="middle" class="svg-title">_topics_lock — held only for the dict lookup</text>
+      <rect x="140" y="32" width="340" height="30" fill="none" stroke="#666" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="310" y="52" text-anchor="middle" class="svg-msg">{"a": TopicState, "b": TopicState, "c": TopicState}</text>
+
+      <rect x="70" y="88" width="150" height="90" fill="#fff" stroke="#b4531a" stroke-width="2"/>
+      <text x="145" y="108" text-anchor="middle" class="svg-title">lock · topic "a"</text>
+      <rect x="88"  y="122" width="36" height="24" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <rect x="124" y="122" width="36" height="24" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <rect x="160" y="122" width="36" height="24" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <text x="145" y="166" text-anchor="middle" class="svg-msg">P1 · C1</text>
+
+      <rect x="235" y="88" width="150" height="90" fill="#fff" stroke="#b4531a" stroke-width="2"/>
+      <text x="310" y="108" text-anchor="middle" class="svg-title">lock · topic "b"</text>
+      <rect x="262" y="122" width="36" height="24" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <rect x="298" y="122" width="36" height="24" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <text x="310" y="166" text-anchor="middle" class="svg-msg">P2 · C2 — in parallel</text>
+
+      <rect x="400" y="88" width="150" height="90" fill="#fff" stroke="#b4531a" stroke-width="2"/>
+      <text x="475" y="108" text-anchor="middle" class="svg-title">lock · topic "c"</text>
+      <rect x="457" y="122" width="36" height="24" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <text x="475" y="166" text-anchor="middle" class="svg-msg">P3 · C3</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example — the lookup pattern</h4>
+<pre><code>def publish(self, topic, msg):
+    with self._topics_lock:                        # short: dict access only
+        state = self._topics.setdefault(topic, TopicState())
+    with state.lock:                               # then: the real work
+        state.deque.append(msg)</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> step-3 harness still clean. Read your code back — no method holds both locks simultaneously.</div>
+</section>
+
+<!-- ============ 05 ============ -->
+<section class="problem" id="p5">
+  <h2><span class="num">05</span> Message objects</h2>
+  <p>Introduce a <code>Message</code> dataclass. <code>publish</code> returns the new id; <code>consume</code> returns the whole <code>Message</code>.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 140" xmlns="http://www.w3.org/2000/svg">
+      <rect x="165" y="18" width="290" height="106" fill="#fff" stroke="#b4531a" stroke-width="2" rx="6"/>
+      <text x="310" y="42" text-anchor="middle" class="svg-title">Message</text>
+      <line x1="185" y1="52" x2="435" y2="52" stroke="#b4531a" stroke-width="1"/>
+      <text x="185" y="73" class="svg-msg">id           "3f8a…c1"   uuid4 hex</text>
+      <text x="185" y="93" class="svg-msg">payload      "hello"</text>
+      <text x="185" y="113" class="svg-msg">enqueued_at  1234.567   time.monotonic()</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>@dataclass
+class Message:
+    id: str
+    payload: str
+    enqueued_at: float
+
+q = Queue5()
+msg_id = q.publish("t", "hello")   # → "3f8a…c1"
+m = q.consume("t")                 # → Message(id="3f8a…c1", payload="hello", …)
+assert m.id == msg_id and m.payload == "hello"</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> ids are unique per publish; <code>enqueued_at</code> comes from <code>time.monotonic()</code>, never <code>time.time()</code>.</div>
+</section>
+
+<!-- ============ 06 ============ -->
+<section class="problem" id="p6">
+  <h2><span class="num">06</span> Lazy TTL</h2>
+  <p><code>publish(topic, payload, ttl_s)</code> stores <code>expires_at = enqueued_at + ttl_s</code>. On <code>consume</code>: pop from the head; if <code>monotonic() &gt;= expires_at</code>, discard and keep going; return the first live one.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 155" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+        </marker>
+      </defs>
+      <text x="310" y="22" text-anchor="middle" class="svg-title">consume() walks the head, dropping expired</text>
+
+      <rect x="70"  y="44" width="92" height="52" fill="#fbeaea" stroke="#a94442" stroke-width="1.5"/>
+      <text x="116" y="66" text-anchor="middle" class="svg-msg">"a" ttl 0.1</text>
+      <text x="116" y="85" text-anchor="middle" class="svg-msg" fill="#a94442">expired</text>
+
+      <rect x="162" y="44" width="92" height="52" fill="#fbeaea" stroke="#a94442" stroke-width="1.5"/>
+      <text x="208" y="66" text-anchor="middle" class="svg-msg">"b" ttl 0.1</text>
+      <text x="208" y="85" text-anchor="middle" class="svg-msg" fill="#a94442">expired</text>
+
+      <rect x="254" y="44" width="92" height="52" fill="#e8f3e8" stroke="#3a7d3a" stroke-width="1.5"/>
+      <text x="300" y="66" text-anchor="middle" class="svg-msg">"c" ttl 10</text>
+      <text x="300" y="85" text-anchor="middle" class="svg-msg" fill="#3a7d3a">live</text>
+
+      <rect x="346" y="44" width="92" height="52" fill="#e8f3e8" stroke="#3a7d3a" stroke-width="1.5"/>
+      <text x="392" y="66" text-anchor="middle" class="svg-msg">"d" ttl 10</text>
+      <text x="392" y="85" text-anchor="middle" class="svg-msg" fill="#3a7d3a">live</text>
+
+      <line x1="446" y1="70" x2="492" y2="70" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#ar6)"/>
+      <text x="505" y="74" class="svg-label">→ "c"</text>
+      <text x="208" y="126" text-anchor="middle" class="svg-title">expired messages cost nothing until someone looks</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>q = Queue6()
+q.publish("t", "a", ttl_s=0.1)
+q.publish("t", "b", ttl_s=10)
+time.sleep(0.2)
+q.consume("t").payload   # → "b"   ("a" silently dropped)
+q.consume("t")           # → None</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> the expired head is skipped, not returned; the deque ends up empty afterwards.</div>
+</section>
+
+<!-- ============ 07 ============ -->
+<section class="problem" id="p7">
+  <h2><span class="num">07</span> Eager reaper</h2>
+  <p>Add a daemon thread that wakes every 100 ms and, per topic, walks the <strong>entire</strong> deque under that topic's lock, removing expired messages. Add <code>close()</code> that stops it cleanly — <code>threading.Event</code>, never <code>signal.alarm</code>.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#b4531a"/>
+        </marker>
+      </defs>
+      <text x="310" y="20" text-anchor="middle" class="svg-title">reaper sweeps every 100 ms</text>
+
+      <circle cx="58" cy="101" r="24" fill="#fff" stroke="#b4531a" stroke-width="2"/>
+      <text x="58" y="106" text-anchor="middle" class="svg-msg">reap</text>
+      <text x="58" y="150" text-anchor="middle" class="svg-title">daemon thread</text>
+
+      <path d="M 84 94 Q 136 62 186 92" fill="none" stroke="#b4531a" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar7)"/>
+      <path d="M 84 114 Q 250 162 401 114" fill="none" stroke="#b4531a" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar7)"/>
+
+      <text x="258" y="74" text-anchor="middle" class="svg-title">topic "a"</text>
+      <rect x="195" y="84" width="42" height="30" fill="#fbeaea" stroke="#a94442" stroke-width="1"/>
+      <text x="216" y="104" text-anchor="middle" class="svg-msg">old</text>
+      <rect x="237" y="84" width="42" height="30" fill="#e8f3e8" stroke="#3a7d3a" stroke-width="1"/>
+      <text x="258" y="104" text-anchor="middle" class="svg-msg">ok</text>
+      <rect x="279" y="84" width="42" height="30" fill="#fbeaea" stroke="#a94442" stroke-width="1"/>
+      <text x="300" y="104" text-anchor="middle" class="svg-msg">old</text>
+
+      <text x="473" y="74" text-anchor="middle" class="svg-title">topic "b"</text>
+      <rect x="410" y="84" width="42" height="30" fill="#e8f3e8" stroke="#3a7d3a" stroke-width="1"/>
+      <text x="431" y="104" text-anchor="middle" class="svg-msg">ok</text>
+      <rect x="452" y="84" width="42" height="30" fill="#fbeaea" stroke="#a94442" stroke-width="1"/>
+      <text x="473" y="104" text-anchor="middle" class="svg-msg">old</text>
+      <rect x="494" y="84" width="42" height="30" fill="#e8f3e8" stroke="#3a7d3a" stroke-width="1"/>
+      <text x="515" y="104" text-anchor="middle" class="svg-msg">ok</text>
+
+      <text x="360" y="182" text-anchor="middle" class="svg-title">removes from the middle too, not just the head</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>q = Queue7()
+for i in range(100):
+    q.publish("x", f"m{i}", ttl_s=0.1)
+time.sleep(0.5)                        # reaper wakes ~5 times
+assert len(q._topics["x"].deque) == 0  # cleared without any consume
+q.close()
+assert not q._reaper_thread.is_alive()</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> a topic nobody consumes from still drains; <code>close()</code> stops the thread.</div>
+</section>
+
+<!-- ============ 08 ============ -->
+<section class="problem" id="p8">
+  <h2><span class="num">08</span> Visibility timeout</h2>
+  <p><code>consume(topic, visibility_s)</code>: don't delete — move the message into a flat <code>_in_flight: dict[msg_id, InFlight]</code> holding the message, its topic, and <code>deadline = monotonic() + visibility_s</code>. Guard it with its own lock.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar8" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+        </marker>
+      </defs>
+      <text x="130" y="26" text-anchor="middle" class="svg-title">ready deque · topic "t"</text>
+      <rect x="58"  y="42" width="56" height="36" fill="#f0ede6" stroke="#888" stroke-width="1" stroke-dasharray="3 2"/>
+      <text x="86"  y="64" text-anchor="middle" class="svg-msg" fill="#888">"a"</text>
+      <rect x="120" y="42" width="56" height="36" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="148" y="64" text-anchor="middle" class="svg-msg">"b"</text>
+      <rect x="182" y="42" width="56" height="36" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="210" y="64" text-anchor="middle" class="svg-msg">"c"</text>
+
+      <path d="M 86 82 L 86 150 L 278 150" fill="none" stroke="#b4531a" stroke-width="1.5" marker-end="url(#ar8)"/>
+      <text x="102" y="112" class="svg-label">hidden,</text>
+      <text x="102" y="128" class="svg-label">not deleted</text>
+
+      <text x="415" y="26" text-anchor="middle" class="svg-title">_in_flight · keyed by message id</text>
+      <rect x="285" y="126" width="270" height="52" fill="#fff" stroke="#b4531a" stroke-width="2" rx="4"/>
+      <text x="303" y="148" class="svg-msg">"3f8a…" → InFlight(msg "a",</text>
+      <text x="303" y="167" class="svg-msg">          topic "t", deadline +5s)</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example</h4>
+<pre><code>q = Queue8()
+q.publish("t", "a"); q.publish("t", "b")
+m1 = q.consume("t", visibility_s=5)   # → Message("a")
+m2 = q.consume("t", visibility_s=5)   # → Message("b")   not "a" again
+q.consume("t", visibility_s=5)        # → None
+assert len(q._in_flight) == 2         # both hidden but alive</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> a consumed message is invisible to other consumers but still tracked.</div>
+</section>
+
+<!-- ============ 09 ============ -->
+<section class="problem" id="p9">
+  <h2><span class="num">09</span> Ack and redelivery</h2>
+  <p><code>ack(msg_id) -&gt; bool</code> removes the entry from <code>_in_flight</code>. Extend the reaper: any entry past its <code>deadline</code> is popped from <code>_in_flight</code> and pushed back onto the <strong>head</strong> of its topic's deque.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 215" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar9g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#3a7d3a"/>
+        </marker>
+        <marker id="ar9r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#b4531a"/>
+        </marker>
+      </defs>
+
+      <text x="110" y="26" text-anchor="middle" class="svg-title">consumer acks</text>
+      <rect x="45" y="42" width="130" height="36" fill="#e8f3e8" stroke="#3a7d3a" stroke-width="1.5"/>
+      <text x="110" y="64" text-anchor="middle" class="svg-msg">ack(m.id) → True</text>
+      <line x1="110" y1="82" x2="110" y2="115" stroke="#3a7d3a" stroke-width="1.5" marker-end="url(#ar9g)"/>
+      <text x="110" y="136" text-anchor="middle" class="svg-msg">dropped from _in_flight</text>
+      <text x="110" y="154" text-anchor="middle" class="svg-msg" fill="#666">gone for good</text>
+
+      <line x1="235" y1="18" x2="235" y2="200" stroke="#d8d4c8" stroke-width="1" stroke-dasharray="4 3"/>
+
+      <text x="425" y="26" text-anchor="middle" class="svg-title">consumer dies — no ack</text>
+      <rect x="285" y="42" width="120" height="36" fill="#fbeaea" stroke="#a94442" stroke-width="1.5"/>
+      <text x="345" y="64" text-anchor="middle" class="svg-msg">silence…</text>
+      <rect x="425" y="42" width="150" height="36" fill="#fff" stroke="#b4531a" stroke-width="1.5"/>
+      <text x="500" y="64" text-anchor="middle" class="svg-msg">reaper: deadline passed</text>
+      <line x1="500" y1="82" x2="500" y2="118" stroke="#b4531a" stroke-width="1.5" marker-end="url(#ar9r)"/>
+      <text x="500" y="138" text-anchor="middle" class="svg-msg">pushed back on the HEAD</text>
+
+      <rect x="430" y="150" width="46" height="30" fill="#fff" stroke="#b4531a" stroke-width="2"/>
+      <text x="453" y="170" text-anchor="middle" class="svg-msg">"a"</text>
+      <rect x="476" y="150" width="46" height="30" fill="#fff" stroke="#b4531a" stroke-width="1"/>
+      <text x="499" y="170" text-anchor="middle" class="svg-msg">"b"</text>
+      <rect x="522" y="150" width="46" height="30" fill="#fff" stroke="#b4531a" stroke-width="1"/>
+      <text x="545" y="170" text-anchor="middle" class="svg-msg">"c"</text>
+      <text x="453" y="198" text-anchor="middle" class="svg-msg" fill="#b4531a">next out</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example — redelivery on timeout</h4>
+<pre><code>q = Queue9()
+q.publish("t", "a")
+m = q.consume("t", visibility_s=0.1)     # in flight
+# consumer "dies" without acking
+time.sleep(0.3)                          # reaper redelivers
+m2 = q.consume("t", visibility_s=5)
+assert m2.id == m.id                     # same message, again</code></pre>
+    <h4>Example — clean ack</h4>
+<pre><code>q.publish("t", "b")
+m = q.consume("t", visibility_s=5)
+assert q.ack(m.id) is True
+time.sleep(0.3)
+assert q.consume("t", visibility_s=5) is None   # never comes back</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> unacked messages return with the same id after the visibility timeout; acked ones never do.</div>
+</section>
+
+<!-- ============ 10 ============ -->
+<section class="problem" id="p10">
+  <h2><span class="num">10</span> Assemble the full thing</h2>
+  <p>Final class <code>MessageQueue</code>:</p>
+<pre><code>publish(topic: str, payload: str, ttl_s: float) -&gt; str        # returns message id
+consume(topic: str, visibility_s: float) -&gt; Message | None
+ack(msg_id: str) -&gt; bool
+queue_size(topic: str) -&gt; int                                 # ready deque only
+close() -&gt; None</code></pre>
+  <p>Per-topic locks, monotonic clock throughout, lazy TTL on consume plus the reaper doing both TTL eviction and visibility redelivery, clean shutdown.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 265" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="a10" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+        </marker>
+        <marker id="a10r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#b4531a"/>
+        </marker>
+      </defs>
+
+      <text x="14" y="52" class="svg-label">P × 4</text>
+      <line x1="56" y1="48" x2="102" y2="88" stroke="#666" stroke-width="1" marker-end="url(#a10)"/>
+
+      <text x="210" y="62" text-anchor="middle" class="svg-title">topics · per-topic lock</text>
+      <rect x="110" y="70" width="200" height="132" fill="#fff" stroke="#b4531a" stroke-width="2" rx="6"/>
+      <rect x="125" y="86"  width="170" height="28" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <text x="210" y="105" text-anchor="middle" class="svg-msg">"a"  [m][m][m][m]</text>
+      <rect x="125" y="122" width="170" height="28" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <text x="210" y="141" text-anchor="middle" class="svg-msg">"b"  [m][m]</text>
+      <rect x="125" y="158" width="170" height="28" fill="#f0ede6" stroke="#b4531a" stroke-width="1"/>
+      <text x="210" y="177" text-anchor="middle" class="svg-msg">"c"  [m][m][m]</text>
+
+      <text x="475" y="62" text-anchor="middle" class="svg-title">_in_flight · own lock</text>
+      <rect x="375" y="70" width="200" height="72" fill="#fff" stroke="#b4531a" stroke-width="2" rx="6"/>
+      <text x="475" y="100" text-anchor="middle" class="svg-msg">id → (msg, topic, deadline)</text>
+      <text x="475" y="122" text-anchor="middle" class="svg-msg" fill="#666">unacked, hidden</text>
+
+      <rect x="375" y="162" width="200" height="58" fill="#fff" stroke="#b4531a" stroke-width="2" rx="6"/>
+      <text x="475" y="184" text-anchor="middle" class="svg-title">reaper · every 100 ms</text>
+      <text x="475" y="205" text-anchor="middle" class="svg-msg">expire TTL · redeliver unacked</text>
+
+      <line x1="312" y1="100" x2="371" y2="100" stroke="#1a1a1a" stroke-width="1" marker-end="url(#a10)"/>
+      <text x="341" y="90" text-anchor="middle" class="svg-msg" fill="#666">consume</text>
+
+      <path d="M 375 136 L 341 136 L 341 234 L 225 234 L 225 208" fill="none" stroke="#b4531a" stroke-width="1.2" marker-end="url(#a10r)"/>
+      <text x="283" y="252" text-anchor="middle" class="svg-msg" fill="#b4531a">redeliver on visibility timeout</text>
+
+      <line x1="575" y1="104" x2="594" y2="54" stroke="#666" stroke-width="1"/>
+      <text x="586" y="44" class="svg-label">C × 4</text>
+    </svg>
+  </div>
+
+  <div class="example">
+    <h4>Example — stress harness with dying consumers</h4>
+<pre><code>q = MessageQueue()
+TOPICS = ("a", "b", "c")
+acked = {}          # msg_id → times acked
+
+def producer(pid):
+    for i in range(1000):
+        q.publish(random.choice(TOPICS), f"{pid}-{i}", ttl_s=30)
+
+def consumer():
+    while not done.is_set():
+        m = q.consume(random.choice(TOPICS), visibility_s=0.2)
+        if m is None:
+            continue
+        if random.random() &lt; 0.9:          # 90% ack, 10% "die" without acking
+            acked[m.id] = acked.get(m.id, 0) + 1
+            q.ack(m.id)
+
+# spin 4 producers + 4 consumers, wait until len(acked) == 4000
+
+assert all(c == 1 for c in acked.values())            # each acked exactly once
+assert sum(q.queue_size(t) for t in TOPICS) == 0
+assert len(q._in_flight) == 0
+q.close()</code></pre>
+  </div>
+
+  <div class="check"><strong>Self-check:</strong> every published id gets acked exactly once even when consumers die; deques and <code>_in_flight</code> both empty at the end; <code>close()</code> stops the reaper.</div>
+</section>
+
+</body>
+</html>
